@@ -1,0 +1,116 @@
+---
+title: "Practical Machine Learning"
+subtitle: "Assignment within Coursera Course "
+author: "Tomas Lancinger"
+date: "20. Nov 2015"
+output: html_document
+---
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement ? a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har>. 
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set.
+
+### Data sets
+
+The data sets could be downloaded from following links:
+
+- training data: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+- test data: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+Assuming the data are stored in the working directory, let's load the data.
+
+```{r}
+setwd("D:\\R\\wd\\ML_writeup")
+training = read.csv("pml-training.csv", na.strings=c("", "NA", "NULL"))
+
+testing = read.csv("pml-testing.csv", na.strings=c("", "NA", "NULL"))
+```
+
+Let's check the characteristics of the files obtained.
+
+```{r}
+str(training, list.len=10)
+
+str(testing, list.len=10)
+```
+
+Let's focus on the "classe" attribute, which is a subject of planned prediction.
+```{r}
+prop.table(table(training$user_name, training$classe), 1)
+```
+
+Removal of irrelevant (mainly NA) values from the data set.
+```{r}
+is_data  <- apply(!is.na(training), 2, sum) > 19621
+
+training <- training[, is_data]
+testing  <- testing[, is_data]
+```
+
+We will select 70% of the data set for testing, the rest will be kept for evaluation.
+```{r}
+library(caret)
+
+
+set.seed(2718281)
+inTrain <- createDataPartition(y=training$classe, p=0.70, list=FALSE)
+trainA  <- training[inTrain,]
+trainB  <- training[-inTrain,]
+```
+
+Characteristics of both training sets.
+```{r}
+dim(trainA)
+dim(trainB)
+```
+
+## Model
+
+Now it is the right time to train the model. We will apply the Random Forests algorithm using the most dominant attributes. 
+```{r}
+library(randomForest)
+set.seed(2718281)
+myModel <- train(classe~roll_belt+num_window+pitch_belt+magnet_dumbbell_y+magnet_dumbbell_z+pitch_forearm+accel_dumbbell_y+roll_arm+roll_forearm,
+                  data=trainA,
+                  method="rf",
+                  trControl=trainControl(method="cv",number=2),
+                  verbose=TRUE,
+                  prox=TRUE,
+                  allowParallel=TRUE)
+```
+
+It is good to save the model for later usage (66MB file).
+```{r}
+saveRDS(myModel, "myModel.Rds")
+```
+
+Now the model could be verified.
+```{r}
+predictions <- predict(myModel, newdata=trainB)
+confusionMat <- confusionMatrix(predictions, trainB$classe)
+confusionMat
+```
+
+According to confusion Matrix info, the model accuracy reaches 99.88% which is much higher than expected.
+
+## Conclusion and Submission
+
+Using 70% of data set for trainig Random Forest model, we have trained a model with *99.88% accuracy* (0.12% error), which is more than sufficient for final submission to course pages.
+
+Let's generate the submission files.
+```{r}
+predictions <- predict(myModel, newdata=testing)
+testing$classe <- predictions
+submit <- data.frame(problem_id = testing$problem_id, classe = predictions)
+write.csv(submit, file = "submission.csv", row.names = FALSE)
+
+```
+
+The predicted results ready for submission are listed below.
+
+```{r}
+submit
+```
+
+After submitting the file according to course instructions the obtained score was 20/20.
