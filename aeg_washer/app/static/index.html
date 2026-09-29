@@ -28,6 +28,15 @@
   #msg { min-height:20px; font-size:14px; margin-top:10px; }
   #msg.err { color:var(--err); } #msg.ok { color:var(--ok); }
   details summary { cursor:pointer; color:var(--muted); font-size:14px; }
+  .seg { display:flex; gap:6px; margin-top:4px; }
+  .seg button { min-width:0; padding:10px 6px; font-size:14px; font-weight:500; }
+  .seg button.on { background:var(--acc); color:#fff; }
+  .toggles { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
+  .toggles label { display:flex; gap:8px; align-items:center; margin:0; font-size:15px; color:var(--fg);
+    padding:10px; border:1px solid var(--line); border-radius:10px; cursor:pointer; }
+  .toggles input { width:auto; margin:0; accent-color:var(--acc); }
+  .summary { margin-top:6px; }
+  [hidden] { display:none !important; }
 </style>
 </head>
 <body>
@@ -38,13 +47,18 @@
     <div class="state" id="state">Načítám…</div>
     <div class="muted" id="phase"></div>
     <div class="big" id="remaining">–</div>
-    <div class="row" id="pills"></div>
+    <div class="muted summary" id="current"></div>
+    <div class="row" id="pills" style="margin-top:8px"></div>
   </section>
 
   <section class="card">
     <label for="program">Program</label>
     <select id="program"></select>
+    <div id="modeBox"></div>
     <div id="options"></div>
+    <div id="drying"></div>
+    <div class="toggles" id="toggles"></div>
+    <div id="delayBox"></div>
     <div class="row" style="margin-top:14px">
       <button class="primary" id="btnStart">Start</button>
       <button id="btnPause">Pauza</button>
@@ -63,13 +77,49 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const STATES = { OFF:"Vypnuto", IDLE:"Připraveno", READY_TO_START:"Připraveno ke startu", RUNNING:"Pere / suší",
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+
+const STATES = { OFF:"Vypnuto", IDLE:"Připraveno", READY_TO_START:"Připraveno ke startu", RUNNING:"Běží",
   PAUSED:"Pozastaveno", DELAYED_START:"Odložený start", END_OF_CYCLE:"Hotovo", ALARM:"Chyba" };
 const RC = { ENABLED:"Dálkový start povolen", NOT_SAFETY_RELEVANT_ENABLED:"Dálkový start nepovolen",
   DISABLED:"Dálkové ovládání vypnuto", TEMPORARY_LOCKED:"Dočasně zamčeno" };
-const OPT_LABELS = { analogTemperature:"Teplota", analogSpinSpeed:"Odstřeďování", steamValue:"Pára" };
+const PHASES = { ANTICREASE:"Proti pomačkání", COOL:"Chlazení", DRAIN:"Vypouštění", DRY:"Sušení", PREWASH:"Předpírka",
+  RINSE:"Máchání", SPIN:"Odstřeďování", STEAM:"Pára", WASH:"Praní" };
+const ALERTS = { CHECK_DOOR:"Zkontroluj dvířka", CHECK_DRAIN_FILTER:"Vyčisti filtr čerpadla",
+  CHECK_INLET_TAP:"Zkontroluj přívod vody", CLEAN_FLUFF_DRAWER:"Vyčisti filtr vláken",
+  DETERGENT_OVERDOSING:"Předávkovaný prací prostředek", DOOR:"Dvířka", EMPTY_WATER_CONTAINER:"Vylij nádržku na vodu",
+  MACHINE_RESTART:"Restart pračky", POWER_FAILURE:"Výpadek proudu", STEAM_TANK_FULL:"Nádržka páry je plná",
+  TOP_UP_SALT:"Doplň sůl", UNBALANCED_LAUNDRY:"Nevyvážené prádlo" };
+// Programy z panelu pračky v jejich pořadí, pak ostatní z aplikace.
+const PANEL = [
+  ["COTTON_PR_ECO40-60", "Eco 40-60"], ["COTTON_PR_COTTONS", "Bavlna"], ["SYNTHETIC_PR_SYNTHETICS", "Syntetika"],
+  ["NON_STOP_3KG_3H_NONSTOP3H_3KG", "NonStop 3h/3kg"], ["DELICATE_PR_DELICATES", "Jemné prádlo"],
+  ["WOOL_PR_WOOL_HANDWASH", "Vlna/Ruční praní"], ["SPORT_JACKETS_PR_OUTDOOR", "Outdoor"],
+  ["STEAM_REFRESH_PR_STEAM", "Pára"], ["SOFTENER_PR_RINSE", "Máchání"], ["SPIN_PR_DRAIN_SPIN", "Odstřeďování/Vypouštění"],
+];
+const PROGRAMS = Object.fromEntries([...PANEL,
+  ["BLANKET_PR_DUVET", "Přikrývky"], ["COTTON_PR_TOWELS", "Ručníky"], ["COTTON_PR_WORKINGCLOTHES", "Pracovní oděvy"],
+  ["DELICATE_PR_BABY", "Dětské prádlo"], ["DENIM_PR_DENIM", "Denim"], ["DRUM_CLEAN_PR_MACHINECLEAN", "Čištění bubnu"],
+  ["JEANS_PR_DARKCLOTHES", "Tmavé prádlo"], ["MINI_PR_SILK", "Hedvábí"], ["QUICK_20_MIN_PR_20MIN3KG", "Rychlý 20 min / 3 kg"],
+  ["SANITISE60_PR_ANTIALLERGY", "Antialergie"], ["SPORT_JACKETS_PR_DOWN_JACKET", "Péřové bundy"],
+  ["STEAM_DEWRINKLER_PR_STEAMCASHMERE", "Pára – kašmír"], ["SYNTHETIC_PR_BEDLINEN", "Ložní prádlo"],
+  ["SYNTHETIC_PR_MICROFIBRE", "Mikrovlákno"], ["SYNTHETIC_PR_SPORTWEAR", "Sportovní oblečení"],
+]);
+const OPT_LABELS = { analogTemperature:"Teplota", analogSpinSpeed:"Odstřeďování", steamValue:"Pára", timeManagerLevel:"Délka programu" };
+const VALUES = { COLD:"Studená", "0_RPM":"Bez odstřeďování", STEAM_OFF:"Vypnuto", STEAM_MIN:"Nízká", STEAM_MED:"Střední",
+  STEAM_MAX:"Vysoká", DAILY:"Denní", NORMAL:"Normální", SUPER_QUICK:"Rychlý" };
+const HUMIDITY = { CUPBOARD:"Do skříně", EXTRA:"Extra suché", IRON:"K žehlení" };
+const TOGGLES = { stain:"Skvrny", preWashPhase:"Předpírka", anticreaseNoSteam:"Proti pomačkání",
+  nightCycle:"Noční cyklus", rinseHold:"Stop s vodou", wmEconomy:"Úsporný" };
+const MODES = { WASH:"Praní", WASH_DRY:"Praní + sušení", DRY:"Jen sušení" };
+const MODE_FLAGS = { WASH:[true,false], WASH_DRY:[true,true], DRY:[false,true] };  // [wetMode, dryMode]
+// Co pračka vypne (podle triggerů v capabilities): při sušení, při „jen sušení“ a pod 40 °C.
+const OFF_WHEN_DRYING = ["nightCycle", "rinseHold"];
+const WASH_ONLY = ["analogTemperature", "analogSpinSpeed", "steamValue", "timeManagerLevel", "stain", "preWashPhase",
+  "nightCycle", "rinseHold", "wmEconomy"];
+const NEEDS_40 = ["stain", "steamValue"];
 
-let programs = [], status = {};
+let programs = [], status = {}, mode = "WASH";
 let token = ""; try { token = localStorage.getItem("washerToken") || ""; } catch {}
 $("token").value = token;
 $("token").onchange = e => { token = e.target.value; try { localStorage.setItem("washerToken", token); } catch {} load(); };
@@ -77,32 +127,98 @@ $("token").onchange = e => { token = e.target.value; try { localStorage.setItem(
 const human = v => {
   const s = String(v);
   let m;
+  if (VALUES[s]) return VALUES[s];
   if ((m = s.match(/^(\d+)_CELSIUS$/))) return m[1] + " °C";
   if ((m = s.match(/^(\d+)_RPM$/))) return m[1] + " ot/min";
   return s.replace(/_PR_/, " · ").replace(/_/g, " ").toLowerCase().replace(/^\w/, c => c.toUpperCase());
 };
+const progName = id => PROGRAMS[id] || human(id);
+const hm = sec => `${Math.floor(sec/3600)}:${String(Math.floor(sec%3600/60)).padStart(2,"0")}`;
+const current = () => programs.find(p => p.id === $("program").value);
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { "Content-Type":"application/json", "X-API-Token": token } });
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.detail || r.statusText);
+  if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail || r.statusText));
   return body;
 }
 function msg(text, cls = "") { $("msg").textContent = text; $("msg").className = cls; }
 
-function renderOptions() {
-  const p = programs.find(p => p.id === $("program").value);
-  const box = $("options"); box.innerHTML = "";
+// Výchozí hodnota volby: aktuální nastavení pračky (pokud je vybraný stejný program), jinak default programu.
+function initial(p, name) {
+  const sel = status.selections || {};
+  return p.id === status.program && sel[name] !== undefined ? sel[name] : p.defaults[name];
+}
+
+function renderProgram() {
+  const p = current();
   if (!p) return;
+  const wet = initial(p, "wetMode") ?? true, dry = initial(p, "dryMode") ?? false;
+  const fromState = Object.keys(MODE_FLAGS).find(m => MODE_FLAGS[m][0] === wet && MODE_FLAGS[m][1] === dry);
+  mode = p.modes.includes(fromState) ? fromState : p.modes[0];
+
+  const box = $("options"); box.innerHTML = "";
   for (const [name, values] of Object.entries(p.options)) {
     const id = "opt_" + name;
-    box.insertAdjacentHTML("beforeend", `<label for="${id}">${OPT_LABELS[name] || human(name)}</label><select id="${id}" data-opt="${name}"></select>`);
+    box.insertAdjacentHTML("beforeend", `<div data-wrap="${esc(name)}"><label for="${id}">${esc(OPT_LABELS[name] || human(name))}</label><select id="${id}" data-opt="${esc(name)}"></select></div>`);
     const sel = $(id);
-    sel.add(new Option("(beze změny)", ""));
     values.forEach(v => sel.add(new Option(human(v), v)));
-    const cur = status.selections?.[name];
-    if (cur !== undefined && values.includes(String(cur))) sel.value = cur;
+    const init = String(initial(p, name));
+    sel.value = values.includes(init) ? init : values[0];
+    sel.onchange = applyRules;
   }
+
+  $("toggles").innerHTML = p.toggles.map(name => `<label data-wrap="${esc(name)}"><input type="checkbox" data-toggle="${esc(name)}"${initial(p, name) ? " checked" : ""}> ${esc(TOGGLES[name] || human(name))}</label>`).join("");
+
+  const d = p.drying;
+  if (d && (d.humidity.length || d.time)) {
+    const opts = d.humidity.map(h => `<option value="h:${esc(h)}">Automaticky – ${esc(HUMIDITY[h] || human(h))}</option>`);
+    if (d.time) for (let t = d.time.min; t <= d.time.max; t += d.time.step) opts.push(`<option value="t:${t}">Časově – ${t} min</option>`);
+    $("drying").innerHTML = `<div data-wrap="drying"><label for="dry">Sušení</label><select id="dry">${opts.join("")}</select></div>`;
+    const h = initial(p, "humidityTarget"), t = initial(p, "dryingTime");
+    const want = t ? `t:${t}` : `h:${h}`;
+    if ([...$("dry").options].some(o => o.value === want)) $("dry").value = want;
+  } else $("drying").innerHTML = "";
+
+  if (p.delay) {
+    const opts = ['<option value="">Hned</option>'];
+    for (let s = p.delay.step; s <= p.delay.max; s += p.delay.step) opts.push(`<option value="${s}">za ${hm(s)} h</option>`);
+    $("delayBox").innerHTML = `<label for="delay">Odložený start</label><select id="delay">${opts.join("")}</select>`;
+  } else $("delayBox").innerHTML = "";
+
+  $("modeBox").innerHTML = p.modes.length > 1
+    ? `<label>Režim</label><div class="seg">${p.modes.map(m => `<button type="button" data-mode="${m}">${MODES[m]}</button>`).join("")}</div>`
+    : (p.modes[0] !== "WASH" ? `<div class="muted" style="margin-top:8px">Režim: ${MODES[p.modes[0]]}</div>` : "");
+  document.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => { mode = b.dataset.mode; applyRules(); });
+  applyRules();
+}
+
+// Skryje volby, které pračka v aktuální kombinaci nepovolí.
+function applyRules() {
+  const [wet, dry] = MODE_FLAGS[mode];
+  const temp = $("opt_analogTemperature")?.value || "";
+  const tempNum = temp === "COLD" ? 0 : parseInt(temp, 10);
+  const hidden = new Set([...(dry ? OFF_WHEN_DRYING : []), ...(wet ? [] : WASH_ONLY),
+    ...(temp && tempNum < 40 ? NEEDS_40 : [])]);
+  if (!dry) hidden.add("drying");
+  document.querySelectorAll("[data-wrap]").forEach(el => el.hidden = hidden.has(el.dataset.wrap));
+  document.querySelectorAll("[data-mode]").forEach(b => b.classList.toggle("on", b.dataset.mode === mode));
+}
+
+function collect() {
+  const p = current();
+  const visible = el => !el.closest("[data-wrap]")?.hidden;
+  const options = {};
+  document.querySelectorAll("[data-opt]").forEach(s => { if (visible(s)) options[s.dataset.opt] = s.value; });
+  document.querySelectorAll("[data-toggle]").forEach(c => { if (visible(c)) options[c.dataset.toggle] = c.checked; });
+  const [wet, dry] = MODE_FLAGS[mode];
+  if (p.modes.length > 1) { options.dryMode = dry; options.wetMode = wet; }
+  if (dry && $("dry") && visible($("dry"))) {
+    const [kind, val] = $("dry").value.split(":");
+    if (kind === "h") options.humidityTarget = val; else options.dryingTime = parseInt(val, 10);
+  }
+  const delay = $("delay")?.value ? parseInt($("delay").value, 10) : null;
+  return { program: p.id, options, delay };
 }
 
 function renderStatus() {
@@ -112,19 +228,37 @@ function renderStatus() {
   $("conn").textContent = online ? "online" : (s.connectionState || "offline");
   $("conn").className = "pill " + (online ? "ok" : "warn");
   $("state").textContent = STATES[s.applianceState] || s.applianceState || "–";
-  $("phase").textContent = s.cyclePhase ? "Fáze: " + human(s.cyclePhase) : "";
+  $("phase").textContent = PHASES[s.cyclePhase] ? "Fáze: " + PHASES[s.cyclePhase] : "";
   const t = s.timeToEnd;
-  $("remaining").textContent = (t && t > 0) ? `${Math.floor(t/3600)}:${String(Math.floor(t%3600/60)).padStart(2,"0")} h` : "–";
+  $("remaining").textContent = (t && t > 0) ? hm(t) + " h" : "–";
+  const sel = s.selections || {};
+  const parts = [];
+  if (s.program) parts.push(progName(s.program));
+  if (sel.wetMode !== false && sel.analogTemperature) parts.push(human(sel.analogTemperature));
+  if (sel.wetMode !== false && sel.analogSpinSpeed && sel.analogSpinSpeed !== "DISABLED") parts.push(human(sel.analogSpinSpeed));
+  if (sel.dryMode) parts.push(sel.dryingTime ? `sušení ${sel.dryingTime} min` : `sušení: ${(HUMIDITY[sel.humidityTarget] || "auto").toLowerCase()}`);
+  $("current").textContent = parts.join(" · ");
   const pills = [];
-  if (s.remoteControl) pills.push(`<span class="pill ${s.remoteStartAllowed ? "ok" : "warn"}">${RC[s.remoteControl] || s.remoteControl}</span>`);
+  if (s.remoteControl) pills.push(`<span class="pill ${s.remoteStartAllowed ? "ok" : "warn"}">${esc(RC[s.remoteControl] || s.remoteControl)}</span>`);
   if (s.doorState) pills.push(`<span class="pill">Dvířka: ${s.doorState === "OPEN" ? "otevřená" : "zavřená"}</span>`);
-  (s.alerts || []).forEach(a => pills.push(`<span class="pill warn">${human(a.code || a)}</span>`));
+  (s.alerts || []).forEach(a => { const code = a.code || a; pills.push(`<span class="pill warn">${esc(ALERTS[code] || human(code))}</span>`); });
   $("pills").innerHTML = pills.join("");
   const st = s.applianceState;
-  $("btnStart").disabled = !s.remoteStartAllowed || ["RUNNING","PAUSED"].includes(st);
-  $("btnPause").disabled = st !== "RUNNING";
+  $("btnStart").disabled = !s.remoteStartAllowed || ["RUNNING","PAUSED","DELAYED_START"].includes(st);
+  $("btnPause").disabled = !["RUNNING","DELAYED_START"].includes(st);
   $("btnResume").disabled = st !== "PAUSED";
-  $("btnStop").disabled = !["RUNNING","PAUSED","DELAYED_START"].includes(st);
+  $("btnStop").disabled = !["RUNNING","PAUSED","DELAYED_START","END_OF_CYCLE"].includes(st);
+}
+
+function fillPrograms() {
+  const ids = new Set(programs.map(p => p.id));
+  const panel = PANEL.map(([id]) => id).filter(id => ids.has(id));
+  const rest = programs.map(p => p.id).filter(id => !panel.includes(id))
+    .sort((a, b) => progName(a).localeCompare(progName(b), "cs"));
+  const group = (label, list) => list.length
+    ? `<optgroup label="${label}">${list.map(id => `<option value="${esc(id)}">${esc(progName(id))}</option>`).join("")}</optgroup>` : "";
+  $("program").innerHTML = group("Na panelu", panel) + group("Další programy", rest);
+  if (status.program && ids.has(status.program)) $("program").value = status.program;
 }
 
 async function load() {
@@ -132,10 +266,8 @@ async function load() {
     status = await api("/api/status");
     if (!programs.length) {
       programs = await api("/api/programs");
-      $("program").innerHTML = "";
-      programs.forEach(p => $("program").add(new Option(human(p.id), p.id)));
-      if (status.program) $("program").value = status.program;
-      renderOptions();
+      fillPrograms();
+      renderProgram();
     }
     renderStatus();
   } catch (e) { msg(e.message, "err"); }
@@ -147,12 +279,8 @@ async function action(path, body) {
   catch (e) { msg(e.message, "err"); }
 }
 
-$("program").onchange = renderOptions;
-$("btnStart").onclick = () => {
-  const options = {};
-  document.querySelectorAll("[data-opt]").forEach(s => { if (s.value) options[s.dataset.opt] = s.value; });
-  action("/api/start", { program: $("program").value, options });
-};
+$("program").onchange = renderProgram;
+$("btnStart").onclick = () => action("/api/start", collect());
 $("btnPause").onclick = () => action("/api/pause");
 $("btnResume").onclick = () => action("/api/resume");
 $("btnStop").onclick = () => confirm("Opravdu zastavit program?") && action("/api/stop");

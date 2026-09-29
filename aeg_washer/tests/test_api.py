@@ -1,6 +1,7 @@
 """Testy s falešným Electrolux klientem (nevolají cloud)."""
 import json
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,6 +28,7 @@ CAPABILITIES = {
                 "userSelections/steamValue": {"disabled": True},
             },
             "SERVICE_PR": {"disabled": True},
+            "PLAIN_PR": {},
         }
     },
     "userSelections/analogTemperature": {"values": {"20_CELSIUS": {}, "40_CELSIUS": {}, "90_CELSIUS": {}}},
@@ -50,6 +52,8 @@ def reported(**overrides):
 
 
 class FakeClient:
+    capabilities = CAPABILITIES
+
     def __init__(self, token_manager):
         self.token_manager = token_manager
         self.commands: list[dict] = []
@@ -66,7 +70,7 @@ class FakeClient:
         return ApplianceDetails(
             applianceInfo=dict(serialNumber="1", pnc="914", brand="AEG", deviceType="WASHER_DRYER",
                                model="LWR9W1606X", variant="", colour="WHITE"),
-            capabilities=CAPABILITIES,
+            capabilities=self.capabilities,
         )
 
     async def get_appliance_state(self, appliance_id):
@@ -110,15 +114,16 @@ def test_status_picks_washer_and_reports_state(env):
     assert s["program"] == "COTTON_PR_COTTONSECO"
 
 
-def test_programs_merge_global_and_program_options(env):
+def test_programs_use_own_options_over_global(env):
     client, _, _ = make(env)
     with client:
         progs = {p["id"]: p["options"] for p in client.get("/api/programs").json()}
-    assert set(progs) == {"COTTON_PR_COTTONSECO", "WOOL_PR_WOOLSILK"}  # disabled program skryt
-    assert progs["COTTON_PR_COTTONSECO"]["analogTemperature"] == ["40_CELSIUS", "60_CELSIUS"]
-    assert progs["COTTON_PR_COTTONSECO"]["analogSpinSpeed"] == ["1200_RPM", "1600_RPM"]
-    assert progs["WOOL_PR_WOOLSILK"]["analogSpinSpeed"] == ["400_RPM", "800_RPM"]  # bez DISABLED
-    assert "steamValue" not in progs["WOOL_PR_WOOLSILK"]
+    assert set(progs) == {"COTTON_PR_COTTONSECO", "WOOL_PR_WOOLSILK", "PLAIN_PR"}  # disabled program skryt
+    assert progs["COTTON_PR_COTTONSECO"] == {"analogTemperature": ["40_CELSIUS", "60_CELSIUS"]}
+    assert progs["WOOL_PR_WOOLSILK"] == {"analogSpinSpeed": ["400_RPM", "800_RPM"]}  # bez DISABLED a vypnuté páry
+    # program bez vlastních voleb dostane globální
+    assert progs["PLAIN_PR"]["analogSpinSpeed"] == ["1200_RPM", "1600_RPM"]
+    assert progs["PLAIN_PR"]["steamValue"] == ["STEAM_OFF", "STEAM_MAX"]
 
 
 def test_start_sends_selections_then_start(env):
@@ -217,3 +222,98 @@ def test_rotated_tokens_are_persisted_and_reused(env):
                                start_background=False)):
         pass
     assert holder3["c"].token_manager._auth_data.refresh_token == "r3"
+
+
+# --------------------------------------------------------------------------
+# Skutečné capabilities pračky AEG LWR98165XC (bez identifikátorů spotřebiče)
+REAL_CAPS = json.loads((Path(__file__).parent / "fixtures" / "capabilities_lwr98165xc.json").read_text("utf-8"))
+
+
+@pytest.fixture
+def real(env, monkeypatch):
+    monkeypatch.setattr(FakeClient, "capabilities", REAL_CAPS)
+    client, holder, service = make(env)
+    with client:
+        holder["client"].reported = reported(userSelections={"programUID": "COTTON_PR_ECO40-60"})
+        client.post("/api/status/refresh")
+        yield client, holder
+
+def programs_by_id(client):
+    return {p["id"]: p for p in client.get("/api/programs").json()}
+
+
+def test_real_programs_structure(real):
+    client, _ = real
+    progs = programs_by_id(client)
+    assert len(progs) == 25
+    eco = progs["COTTON_PR_ECO40-60"]
+    assert eco["options"]["analogTemperature"] == ["40_CELSIUS"]
+    assert "DISABLED" not in eco["options"]["analogSpinSpeed"]
+    assert "wmEconomy" not in eco["toggles"]  # u Eco jen pro čtení
+    assert {"stain", "preWashPhase", "anticreaseNoSteam"} <= set(eco["toggles"])
+    assert eco["modes"] == ["WASH", "WASH_DRY", "DRY"]
+    assert eco["drying"]["humidity"] == ["CUPBOARD", "EXTRA"]
+    assert eco["drying"]["time"] == {"min": 10, "max": 300, "step": 10}
+    assert eco["delay"] == {"max": 86400, "step": 1800}
+    assert "humidityTarget" not in eco["options"]
+
+
+def test_real_nonstop_always_dries(real):
+    client, _ = real
+    nonstop = programs_by_id(client)["NON_STOP_3KG_3H_NONSTOP3H_3KG"]
+    assert nonstop["modes"] == ["WASH_DRY"]
+    assert nonstop["drying"]["humidity"] == ["CUPBOARD"]
+
+
+def test_real_spin_has_only_spin_speed(real):
+    client, _ = real
+    spin = programs_by_id(client)["SPIN_PR_DRAIN_SPIN"]
+    assert spin["options"] == {"analogSpinSpeed": ["0_RPM", "1000_RPM", "1200_RPM", "1400_RPM",
+                                                   "1600_RPM", "400_RPM", "600_RPM", "800_RPM"]}
+    assert spin["modes"] == ["WASH"] and spin["drying"] is None and spin["delay"] is None
+
+
+def test_real_start_wash_dry_with_delay(real):
+    client, holder = real
+    r = client.post("/api/start", json={"program": "COTTON_PR_COTTONS",
+                                        "options": {"analogTemperature": "60_CELSIUS", "dryMode": True,
+                                                    "humidityTarget": "IRON", "stain": True},
+                                        "delay": 3 * 3600})
+    assert r.status_code == 200, r.text
+    assert holder["client"].commands == [
+        {"userSelections": {"programUID": "COTTON_PR_COTTONS", "analogTemperature": "60_CELSIUS",
+                            "dryMode": True, "humidityTarget": "IRON", "stain": True}},
+        {"startTime": 10800},
+        {"executeCommand": "START"},
+    ]
+
+
+def test_real_start_timed_drying(real):
+    client, holder = real
+    r = client.post("/api/start", json={"program": "COTTON_PR_COTTONS",
+                                        "options": {"dryMode": True, "wetMode": False, "dryingTime": 90}})
+    assert r.status_code == 200, r.text
+    assert holder["client"].commands[0]["userSelections"]["dryingTime"] == 90
+
+
+@pytest.mark.parametrize("body,fragment", [
+    ({"program": "COTTON_PR_ECO40-60", "options": {"humidityTarget": "CUPBOARD"}}, "dryMode"),
+    ({"program": "COTTON_PR_ECO40-60", "options": {"dryMode": True, "humidityTarget": "IRON"}}, "úroveň"),
+    ({"program": "COTTON_PR_ECO40-60", "options": {"dryMode": True, "dryingTime": 35}}, "čas sušení"),
+    ({"program": "COTTON_PR_ECO40-60", "options": {"dryMode": True, "dryingTime": 60,
+                                                   "humidityTarget": "CUPBOARD"}}, "obojí"),
+    ({"program": "COTTON_PR_ECO40-60", "options": {"dryMode": False, "wetMode": False}}, "kombinace"),
+    ({"program": "COTTON_PR_ECO40-60", "options": {"stain": "yes"}}, "true/false"),
+    ({"program": "COTTON_PR_ECO40-60", "options": {"wmEconomy": False}}, "nelze"),
+    ({"program": "NON_STOP_3KG_3H_NONSTOP3H_3KG", "options": {"dryMode": False}}, "nelze"),
+    ({"program": "SPIN_PR_DRAIN_SPIN", "options": {"analogTemperature": "40_CELSIUS"}}, "nelze"),
+    ({"program": "SPIN_PR_DRAIN_SPIN", "delay": 1800}, "odložený start"),
+    ({"program": "COTTON_PR_ECO40-60", "delay": 1000}, "mimo rozsah"),
+    ({"program": "COTTON_PR_ECO40-60", "delay": 90000}, "mimo rozsah"),
+])
+def test_real_start_rejects_invalid(real, body, fragment):
+    client, holder = real
+    r = client.post("/api/start", json=body)
+    assert r.status_code == 422, r.text
+    assert fragment in r.json()["detail"]
+    assert holder["client"].commands == []

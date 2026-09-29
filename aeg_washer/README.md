@@ -69,9 +69,9 @@ sudo tailscale serve --bg 8080            # HTTPS jen v tailnetu: https://<vps>.
 |---|---|---|
 | GET | `/api/status` | stav, fáze, zbývající čas, dvířka, povolení dálkového startu |
 | POST | `/api/status/refresh` | vynutí načtení stavu z cloudu |
-| GET | `/api/programs` | programy + volby pro každý program (teplota, otáčky, pára, sušení…) |
+| GET | `/api/programs` | programy a pro každý `options`, `toggles`, `modes`, `drying`, `delay`, `defaults` (viz níže) |
 | GET | `/api/raw` | surové `capabilities` a `state` z Electrolux API |
-| POST | `/api/start` | `{"program": "...", "options": {"analogTemperature": "40_CELSIUS"}}`, obojí volitelné |
+| POST | `/api/start` | `{"program": "...", "options": {...}, "delay": 7200}`, vše volitelné |
 | POST | `/api/pause`, `/api/resume`, `/api/stop` | ovládání běžícího cyklu |
 | POST | `/api/command` | libovolný příkaz 1:1 do Electrolux API (pro pokročilé) |
 
@@ -79,11 +79,21 @@ Příklad:
 
 ```bash
 curl -X POST http://localhost:8080/api/start -H 'Content-Type: application/json' \
-  -d '{"program":"COTTON_PR_COTTONSECO","options":{"analogTemperature":"40_CELSIUS","analogSpinSpeed":"1200_RPM"}}'
+  -d '{"program":"COTTON_PR_COTTONS","options":{"analogTemperature":"40_CELSIUS","analogSpinSpeed":"1200_RPM","dryMode":true,"humidityTarget":"CUPBOARD"},"delay":7200}'
 ```
 
-Přesné názvy programů a voleb se liší podle modelu. Vždy je vezmi z `/api/programs`.
-Volby sušení se objeví automaticky, pokud je model v API nabízí (klíče `userSelections/*`).
+Přesné názvy programů a voleb se liší podle modelu. Vždy je vezmi z `/api/programs`:
+
+- `options`: výčtové volby (`analogTemperature`, `analogSpinSpeed`, `steamValue`, `timeManagerLevel`)
+- `toggles`: zapínací volby `true/false` (`stain`, `preWashPhase`, `anticreaseNoSteam`, `nightCycle`, `rinseHold`)
+- `modes`: `WASH` (praní), `WASH_DRY` (praní + sušení), `DRY` (jen sušení); v `options` se posílá jako
+  `wetMode` + `dryMode`
+- `drying`: sušení buď na úroveň `humidityTarget` (`CUPBOARD` do skříně, `EXTRA`, `IRON` k žehlení), nebo
+  časově `dryingTime` v minutách, ne obojí; vyžaduje `dryMode: true`
+- `delay`: odložený start v sekundách (násobek `step`, max `max`), posílá se jako `startTime`
+
+Neplatná kombinace vrací 422 ještě před odesláním do pračky. Model AEG LWR98165XC má 25 programů;
+jeho capabilities jsou v `tests/fixtures/` a testy proti nim ověřují validaci.
 
 Pokud nastavíš `LOCAL_API_TOKEN`, všechna `/api/*` volání (kromě `/api/health`) vyžadují hlavičku
 `X-API-Token`. Ve webovém UI ho zadáš v sekci *Nastavení*.

@@ -23,8 +23,10 @@ class StartRequest(BaseModel):
     program: str | None = Field(None, description="programUID, např. COTTON_PR_COTTONSECO")
     options: dict[str, Any] = Field(
         default_factory=dict,
-        description="Další userSelections, např. {\"analogTemperature\": \"40_CELSIUS\", \"analogSpinSpeed\": \"1200_RPM\"}",
+        description="Další userSelections, např. {\"analogTemperature\": \"40_CELSIUS\", \"analogSpinSpeed\": \"1200_RPM\", "
+                    "\"dryMode\": true, \"humidityTarget\": \"CUPBOARD\"}",
     )
+    delay: int | None = Field(None, description="Odložený start v sekundách (násobek kroku z /api/programs → delay)")
 
 
 def create_app(service: WasherService | None = None, start_background: bool = True) -> FastAPI:
@@ -81,7 +83,7 @@ def create_app(service: WasherService | None = None, start_background: bool = Tr
     @app.post("/api/start", dependencies=[Depends(auth)])
     async def start(req: StartRequest | None = None):
         req = req or StartRequest()
-        return {"result": await washer.start_cycle(req.program, req.options)}
+        return {"result": await washer.start_cycle(req.program, req.options, req.delay)}
 
     @app.post("/api/pause", dependencies=[Depends(auth)])
     async def pause():
