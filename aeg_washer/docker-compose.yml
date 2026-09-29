@@ -1,0 +1,12 @@
+services:
+  aeg-washer:
+    build: .
+    container_name: aeg-washer
+    env_file: .env
+    environment:
+      TOKEN_FILE: /srv/data/tokens.json
+    volumes:
+      - ./data:/srv/data
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

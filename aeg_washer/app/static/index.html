@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pračka</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --fg:#1b1d21; --muted:#6b7280; --acc:#2563eb; --ok:#16a34a; --warn:#d97706; --err:#dc2626; --line:#e5e7eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1115; --card:#181b21; --fg:#e8eaed; --muted:#9aa0a6; --line:#2a2e36; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:520px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 16px; display:flex; justify-content:space-between; align-items:center; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+  .state { font-size:26px; font-weight:650; }
+  .muted { color:var(--muted); font-size:14px; }
+  .big { font-size:40px; font-variant-numeric:tabular-nums; font-weight:600; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  .pill { font-size:13px; padding:3px 10px; border-radius:999px; border:1px solid var(--line); }
+  .pill.ok { color:var(--ok); border-color:var(--ok); } .pill.warn { color:var(--warn); border-color:var(--warn); }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  select, input { width:100%; padding:10px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font-size:16px; }
+  button { flex:1; min-width:100px; padding:12px; border-radius:10px; border:0; font-size:16px; font-weight:600; cursor:pointer; background:var(--line); color:var(--fg); }
+  button.primary { background:var(--acc); color:#fff; } button.danger { background:var(--err); color:#fff; }
+  button:disabled { opacity:.45; cursor:default; }
+  #msg { min-height:20px; font-size:14px; margin-top:10px; }
+  #msg.err { color:var(--err); } #msg.ok { color:var(--ok); }
+  details summary { cursor:pointer; color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span id="name">Pračka</span> <span id="conn" class="pill">…</span></h1>
+
+  <section class="card">
+    <div class="state" id="state">Načítám…</div>
+    <div class="muted" id="phase"></div>
+    <div class="big" id="remaining">–</div>
+    <div class="row" id="pills"></div>
+  </section>
+
+  <section class="card">
+    <label for="program">Program</label>
+    <select id="program"></select>
+    <div id="options"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="btnStart">Start</button>
+      <button id="btnPause">Pauza</button>
+      <button id="btnResume">Pokračovat</button>
+      <button class="danger" id="btnStop">Stop</button>
+    </div>
+    <div id="msg"></div>
+  </section>
+
+  <details class="card">
+    <summary>Nastavení</summary>
+    <label for="token">Lokální API token (pokud je nastaven LOCAL_API_TOKEN)</label>
+    <input id="token" type="password" autocomplete="off">
+  </details>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const STATES = { OFF:"Vypnuto", IDLE:"Připraveno", READY_TO_START:"Připraveno ke startu", RUNNING:"Pere / suší",
+  PAUSED:"Pozastaveno", DELAYED_START:"Odložený start", END_OF_CYCLE:"Hotovo", ALARM:"Chyba" };
+const RC = { ENABLED:"Dálkový start povolen", NOT_SAFETY_RELEVANT_ENABLED:"Dálkový start nepovolen",
+  DISABLED:"Dálkové ovládání vypnuto", TEMPORARY_LOCKED:"Dočasně zamčeno" };
+const OPT_LABELS = { analogTemperature:"Teplota", analogSpinSpeed:"Odstřeďování", steamValue:"Pára" };
+
+let programs = [], status = {};
+let token = ""; try { token = localStorage.getItem("washerToken") || ""; } catch {}
+$("token").value = token;
+$("token").onchange = e => { token = e.target.value; try { localStorage.setItem("washerToken", token); } catch {} load(); };
+
+const human = v => {
+  const s = String(v);
+  let m;
+  if ((m = s.match(/^(\d+)_CELSIUS$/))) return m[1] + " °C";
+  if ((m = s.match(/^(\d+)_RPM$/))) return m[1] + " ot/min";
+  return s.replace(/_PR_/, " · ").replace(/_/g, " ").toLowerCase().replace(/^\w/, c => c.toUpperCase());
+};
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { "Content-Type":"application/json", "X-API-Token": token } });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+function msg(text, cls = "") { $("msg").textContent = text; $("msg").className = cls; }
+
+function renderOptions() {
+  const p = programs.find(p => p.id === $("program").value);
+  const box = $("options"); box.innerHTML = "";
+  if (!p) return;
+  for (const [name, values] of Object.entries(p.options)) {
+    const id = "opt_" + name;
+    box.insertAdjacentHTML("beforeend", `<label for="${id}">${OPT_LABELS[name] || human(name)}</label><select id="${id}" data-opt="${name}"></select>`);
+    const sel = $(id);
+    sel.add(new Option("(beze změny)", ""));
+    values.forEach(v => sel.add(new Option(human(v), v)));
+    const cur = status.selections?.[name];
+    if (cur !== undefined && values.includes(String(cur))) sel.value = cur;
+  }
+}
+
+function renderStatus() {
+  const s = status;
+  $("name").textContent = s.name || "Pračka";
+  const online = (s.connectionState || "").toLowerCase() === "connected";
+  $("conn").textContent = online ? "online" : (s.connectionState || "offline");
+  $("conn").className = "pill " + (online ? "ok" : "warn");
+  $("state").textContent = STATES[s.applianceState] || s.applianceState || "–";
+  $("phase").textContent = s.cyclePhase ? "Fáze: " + human(s.cyclePhase) : "";
+  const t = s.timeToEnd;
+  $("remaining").textContent = (t && t > 0) ? `${Math.floor(t/3600)}:${String(Math.floor(t%3600/60)).padStart(2,"0")} h` : "–";
+  const pills = [];
+  if (s.remoteControl) pills.push(`<span class="pill ${s.remoteStartAllowed ? "ok" : "warn"}">${RC[s.remoteControl] || s.remoteControl}</span>`);
+  if (s.doorState) pills.push(`<span class="pill">Dvířka: ${s.doorState === "OPEN" ? "otevřená" : "zavřená"}</span>`);
+  (s.alerts || []).forEach(a => pills.push(`<span class="pill warn">${human(a.code || a)}</span>`));
+  $("pills").innerHTML = pills.join("");
+  const st = s.applianceState;
+  $("btnStart").disabled = !s.remoteStartAllowed || ["RUNNING","PAUSED"].includes(st);
+  $("btnPause").disabled = st !== "RUNNING";
+  $("btnResume").disabled = st !== "PAUSED";
+  $("btnStop").disabled = !["RUNNING","PAUSED","DELAYED_START"].includes(st);
+}
+
+async function load() {
+  try {
+    status = await api("/api/status");
+    if (!programs.length) {
+      programs = await api("/api/programs");
+      $("program").innerHTML = "";
+      programs.forEach(p => $("program").add(new Option(human(p.id), p.id)));
+      if (status.program) $("program").value = status.program;
+      renderOptions();
+    }
+    renderStatus();
+  } catch (e) { msg(e.message, "err"); }
+}
+
+async function action(path, body) {
+  msg("Odesílám…");
+  try { await api(path, { method:"POST", body: body ? JSON.stringify(body) : undefined }); msg("OK", "ok"); setTimeout(load, 1500); }
+  catch (e) { msg(e.message, "err"); }
+}
+
+$("program").onchange = renderOptions;
+$("btnStart").onclick = () => {
+  const options = {};
+  document.querySelectorAll("[data-opt]").forEach(s => { if (s.value) options[s.dataset.opt] = s.value; });
+  action("/api/start", { program: $("program").value, options });
+};
+$("btnPause").onclick = () => action("/api/pause");
+$("btnResume").onclick = () => action("/api/resume");
+$("btnStop").onclick = () => confirm("Opravdu zastavit program?") && action("/api/stop");
+
+load(); setInterval(load, 10000);
+</script>
+</body>
+</html>
