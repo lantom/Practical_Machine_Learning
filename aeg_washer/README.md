@@ -53,6 +53,16 @@ docker compose up -d --build
 - Ovládání: `http://<ip-počítače>:8080/`
 - Dokumentace API (Swagger): `http://<ip-počítače>:8080/docs`
 
+### Na VPS přes Tailscale (doporučeno)
+
+Služba mluví jen s cloudem Electrolux, takže nemusí běžet doma. Na VPS s Tailscale je dostupná jen z tvých
+zařízení v tailnetu a ne z internetu:
+
+```bash
+docker compose up -d --build              # port 8080 je navázaný jen na 127.0.0.1
+sudo tailscale serve --bg 8080            # HTTPS jen v tailnetu: https://<vps>.<tailnet>.ts.net/
+```
+
 ## API
 
 | Metoda | Cesta | Popis |
