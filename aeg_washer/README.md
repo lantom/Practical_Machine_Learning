@@ -1,113 +1,97 @@
-# AEG pračka – vlastní API a ovládání (bez aplikace AEG)
+# AEG pračka – stav do telefonu a pro agenty
 
-Malá služba, která běží doma (PC, Raspberry Pi, NAS) a nabízí:
+Malá služba, která jen **sleduje** pračku se sušičkou AEG (bez ovládání) a nabízí:
 
-- **REST API** (`/api/...`) pro stav a ovládání pračky se sušičkou,
-- **webové ovládání pro mobil** na `http://<ip>:8080/`,
-- živou aktualizaci stavu (livestream z cloudu), notifikaci „dopráno“ (ntfy),
-- CLI pro rychlé testy.
+- **průběžnou notifikaci na Androidu** (aplikace ntfy): během programu ukazuje ikony programu a voleb,
+  aktuální fázi a odhad konce, po dopraní se změní na „✅ Hotovo“ (se zvukem) a po vypnutí pračky zmizí,
+- **JSON stav** `GET /api/status` pro agenty (např. Hermes) a jednořádkový souhrn `GET /api/status.txt`.
 
-Testováno proti oficiálnímu SDK `electrolux-group-developer-sdk` 0.7.0 (typ spotřebiče `WD` = pračka se sušičkou,
-např. AEG 9000 AbsoluteCare 10/6 kg).
+Ovládání (start, pauza, programy) záměrně není: pračka dálkový start bez fyzického potvrzení na panelu
+stejně nepovolí (`remoteControl` je v API jen pro čtení).
 
-## Jak to funguje (a proč přes cloud)
+Testováno proti oficiálnímu SDK `electrolux-group-developer-sdk` 0.7.0 (typ `WD`, AEG LWR98165XC).
 
-Pračky AEG/Electrolux **nemají lokální API**. Wi‑Fi modul udržuje jen šifrované spojení do cloudu Electrolux a na
-lokální síti na nic neodpovídá. To, že je pračka připojená na domácí Wi‑Fi, tedy pro ovládání nestačí:
-musí být **zaregistrovaná na účtu Electrolux/AEG**. Tahle služba pak mluví s oficiálním
-**Electrolux Group Developer API** (`api.developer.electrolux.one`) místo aplikace.
+## Jak to funguje
+
+Pračky AEG/Electrolux **nemají lokální API**, jen spojení do cloudu. Služba poslouchá oficiální
+**Electrolux Group Developer API** (livestream + záložní polling) a stav drží v paměti.
 
 ```
-[mobil/prohlížeč] → [tato služba doma :8080] → api.developer.electrolux.one → [pračka]
+pračka → cloud Electrolux → tato služba ─┬→ GET /api/status   (Hermes, curl)
+                                          └→ ntfy.sh → notifikace na Androidu
 ```
 
 ## 1. Příprava (jednorázově)
 
-1. **Pračka na účtu.** Pokud jsi ji nikdy nepároval v aplikaci *My AEG Care*, udělej to jednou (přidat spotřebič →
-   Wi‑Fi 2,4 GHz). Pouhé připojení k Wi‑Fi bez spárování s účtem nestačí. Potom můžeš aplikaci smazat.
-2. **API klíč a tokeny.** Přihlas se na <https://developer.electrolux.one> **stejným účtem** jako v aplikaci,
-   vytvoř *API Key* a vygeneruj *Access Token* + *Refresh Token*.
-3. `cp .env.example .env` a vlož tam `ELX_API_KEY`, `ELX_ACCESS_TOKEN`, `ELX_REFRESH_TOKEN`.
+1. **Pračka na účtu** – spárovaná v aplikaci *My AEG Care* (Wi‑Fi 2,4 GHz).
+2. **API klíč a tokeny** z <https://developer.electrolux.one> (stejný účet): *API Key*, *Access Token*, *Refresh Token*.
+3. `cp .env.example .env` a vyplnit `ELX_API_KEY`, `ELX_ACCESS_TOKEN`, `ELX_REFRESH_TOKEN`.
 
 > Refresh token se při každé obnově mění. Služba si nové tokeny ukládá do `data/tokens.json`
 > (práva 600). Když v `.env` vložíš nové tokeny, automaticky dostanou přednost.
 
-## 2. Ověření z příkazové řádky
+## 2. Notifikace na telefonu (Android)
 
-```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-python -m app.cli status      # stav pračky
-python -m app.cli programs    # programy a povolené volby
-python -m app.cli raw > raw.json   # surová data (názvy voleb pro sušení atd.)
-```
+1. Vymysli téma s náhodným názvem (kdo ho zná, vidí stav pračky), např. `pracka-3f9c1a7b2e`.
+2. Do `.env`: `NTFY_URL=https://ntfy.sh/pracka-3f9c1a7b2e`
+3. V telefonu nainstaluj **ntfy** (Google Play / F‑Droid) → **+** → stejné téma.
+4. V Nastavení Androidu → Aplikace → ntfy → Oznámení můžeš kanál „Low priority“ nechat tichý;
+   ikona v liště se zobrazuje, zvuk jen u „Hotovo“.
 
-## 3. Spuštění serveru
+Notifikace se přepisuje (hlavička `X-Sequence-ID`) jen při změně fáze nebo posunu odhadu konce o ≥ 3 min,
+takže telefon nezahlcuje.
 
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8080
-# nebo
-docker compose up -d --build
-```
-
-- Ovládání: `http://<ip-počítače>:8080/`
-- Dokumentace API (Swagger): `http://<ip-počítače>:8080/docs`
-
-### Na VPS přes Tailscale (doporučeno)
-
-Služba mluví jen s cloudem Electrolux, takže nemusí běžet doma. Na VPS s Tailscale je dostupná jen z tvých
-zařízení v tailnetu a ne z internetu:
+## 3. Spuštění
 
 ```bash
 docker compose up -d --build              # port 8080 je navázaný jen na 127.0.0.1
 sudo tailscale serve --bg 8080            # HTTPS jen v tailnetu: https://<vps>.<tailnet>.ts.net/
 ```
 
+Rychlé ověření bez serveru: `docker compose run --rm aeg-washer python -m app.cli status`
+
 ## API
 
 | Metoda | Cesta | Popis |
 |---|---|---|
-| GET | `/api/status` | stav, fáze, zbývající čas, dvířka, povolení dálkového startu |
-| POST | `/api/status/refresh` | vynutí načtení stavu z cloudu |
-| GET | `/api/programs` | programy a pro každý `options`, `toggles`, `modes`, `drying`, `delay`, `defaults` (viz níže) |
-| GET | `/api/raw` | surové `capabilities` a `state` z Electrolux API |
-| POST | `/api/start` | `{"program": "...", "options": {...}, "delay": 7200}`, vše volitelné |
-| POST | `/api/pause`, `/api/resume`, `/api/stop` | ovládání běžícího cyklu |
-| POST | `/api/command` | libovolný příkaz 1:1 do Electrolux API (pro pokročilé) |
+| GET | `/api/status` | kompaktní stav (viz níže) |
+| GET | `/api/status.txt` | jen jednořádkový souhrn |
+| GET | `/api/health` | `{"ok": true, "stream": true}` |
 
-Příklad:
+Při nastaveném `LOCAL_API_TOKEN` je potřeba hlavička `X-API-Token` nebo `?token=`.
 
-```bash
-curl -X POST http://localhost:8080/api/start -H 'Content-Type: application/json' \
-  -d '{"program":"COTTON_PR_COTTONS","options":{"analogTemperature":"40_CELSIUS","analogSpinSpeed":"1200_RPM","dryMode":true,"humidityTarget":"CUPBOARD"},"delay":7200}'
+Příklad během praní:
+
+```json
+{
+  "running": true,
+  "state": "RUNNING",
+  "stateIcon": "▶️",
+  "stateText": "Běží",
+  "online": true,
+  "program": {"id": "COTTON_PR_COTTONS", "icon": "👕", "name": "Bavlna"},
+  "icons": ["🌡️40°", "🌀1200", "🌬️"],
+  "drying": "do skříně",
+  "phase": {"id": "WASH", "icon": "🫧", "name": "Praní"},
+  "remainingMin": 75,
+  "endsAt": "2026-09-30T14:35:00+02:00",
+  "startsAt": null,
+  "alerts": [],
+  "text": "👕 Bavlna 🌡️40° 🌀1200 🌬️ · 🫧 Praní · 🏁 14:35",
+  "updatedAt": "2026-09-30T13:20:10+02:00"
+}
 ```
 
-Přesné názvy programů a voleb se liší podle modelu. Vždy je vezmi z `/api/programs`:
+Mimo praní je `running: false` a `text` např. `💤 Nečinná`, `✅ Hotovo` nebo `📴 Pračka offline`.
 
-- `options`: výčtové volby (`analogTemperature`, `analogSpinSpeed`, `steamValue`, `timeManagerLevel`)
-- `toggles`: zapínací volby `true/false` (`stain`, `preWashPhase`, `anticreaseNoSteam`, `nightCycle`, `rinseHold`)
-- `modes`: `WASH` (praní), `WASH_DRY` (praní + sušení), `DRY` (jen sušení); v `options` se posílá jako
-  `wetMode` + `dryMode`
-- `drying`: sušení buď na úroveň `humidityTarget` (`CUPBOARD` do skříně, `EXTRA`, `IRON` k žehlení), nebo
-  časově `dryingTime` v minutách, ne obojí; vyžaduje `dryMode: true`
-- `delay`: odložený start v sekundách (násobek `step`, max `max`), posílá se jako `startTime`
+### Hermes Agent
 
-Neplatná kombinace vrací 422 ještě před odesláním do pračky. Model AEG LWR98165XC má 25 programů;
-jeho capabilities jsou v `tests/fixtures/` a testy proti nim ověřují validaci.
+Stačí mu dát URL (je v tailnetu, takže Hermes musí běžet na stroji s Tailscale):
 
-Pokud nastavíš `LOCAL_API_TOKEN`, všechna `/api/*` volání (kromě `/api/health`) vyžadují hlavičku
-`X-API-Token`. Ve webovém UI ho zadáš v sekci *Nastavení*.
-
-## Dálkový start – důležité
-
-Z bezpečnostních důvodů pračka přijme **START** jen tehdy, když na ní máš **povolené dálkové spuštění**
-(`remoteControl = ENABLED`). Obvykle: naplnit, zavřít dvířka a na panelu zapnout *Dálkové spuštění* (přesný postup
-je v návodu k pračce). Bez toho API vrátí `409` s vysvětlením. Pauza a stop fungují podle stavu pračky.
-
-## Notifikace
-
-Nastav `NTFY_URL=https://ntfy.sh/<tvůj-tajný-kanál>`, nainstaluj si aplikaci ntfy a odebírej stejný kanál.
-Při přechodu z běžícího programu do stavu `END_OF_CYCLE` přijde zpráva.
+```
+Stav pračky zjistíš: curl -s https://claudius-vps.<tailnet>.ts.net/api/status
+Pole `text` je hotový souhrn, `endsAt` odhad konce, `running` zda pere.
+```
 
 ## Vývoj a testy
 
@@ -115,5 +99,3 @@ Při přechodu z běžícího programu do stavu `END_OF_CYCLE` přijde zpráva.
 pip install -r requirements-dev.txt
 pytest -q
 ```
-
-Testy používají falešného klienta a do cloudu se nepřipojují.

@@ -26,6 +26,7 @@ class Settings:
     local_api_token: str | None
     poll_interval: int
     ntfy_url: str | None
+    timezone: str = "Europe/Prague"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -39,4 +40,5 @@ class Settings:
             local_api_token=os.environ.get("LOCAL_API_TOKEN") or None,
             poll_interval=int(os.environ.get("POLL_INTERVAL", "300")),
             ntfy_url=os.environ.get("NTFY_URL") or None,
+            timezone=os.environ.get("TZ") or "Europe/Prague",
         )

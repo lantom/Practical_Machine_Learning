@@ -5,6 +5,11 @@
 > jednoduše a **krok po kroku**. Uživatel výslovně chtěl vést postupně: jeden krok, pak počkat na výsledek.
 > Nikdy po uživateli nechtěj, aby ti klíče nebo tokeny vkládal do chatu, a nikdy nevypisuj obsah `.env`
 > ani `data/tokens.json`.
+>
+> **Aktualizace 2026-09-30:** aplikace je přestavěná **jen na sledování stavu** (bez ovládání, programů a web UI).
+> Pračka nepovolí dálkový start bez potvrzení na panelu, takže ovládání nedávalo smysl. Zbylo:
+> `GET /api/status` (JSON pro Hermes Agent), `GET /api/status.txt` a průběžná ntfy notifikace na Androidu
+> (`NTFY_URL`). Aktuální popis je v `aeg_washer/README.md`; části níže o ovládání a UI jsou historické.
 
 ---
 
